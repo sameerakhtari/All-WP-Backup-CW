@@ -63,11 +63,25 @@ extract_ids_from_logs() {
 # Parse JSON "access_token" without jq (fallback)
 json_get_access_token() { sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'; }
 
-# ---------- disk space ----------
+# ---------- disk space (BLOCKSTORAGE preferred) ----------
 DISK_PATH="/"
-if mount | grep -q "/mnt/BLOCKSTORAGE"; then DISK_PATH="/mnt/BLOCKSTORAGE"; fi
-AVAIL_DISK_BYTES=$(df -B1 --output=avail "$DISK_PATH" | tail -1 | tr -dc '0-9')
-echo "Available space: $(hr "$AVAIL_DISK_BYTES") (on $DISK_PATH)"
+if command -v mountpoint >/dev/null 2>&1; then
+  if mountpoint -q /mnt/BLOCKSTORAGE; then DISK_PATH="/mnt/BLOCKSTORAGE"; fi
+else
+  # fallback if 'mountpoint' is unavailable
+  if df -P | awk '{print $6}' | grep -qx "/mnt/BLOCKSTORAGE"; then DISK_PATH="/mnt/BLOCKSTORAGE"; fi
+fi
+
+DISK_INFO=$(df -B1 --output=size,used,avail,target "$DISK_PATH" | tail -1)
+TOTAL_BYTES=$(echo "$DISK_INFO" | awk '{print $1}')
+USED_BYTES=$(echo "$DISK_INFO" | awk '{print $2}')
+AVAIL_DISK_BYTES=$(echo "$DISK_INFO" | awk '{print $3}')
+MOUNT_POINT=$(echo "$DISK_INFO" | awk '{print $4}')
+
+echo "Disk stats for $MOUNT_POINT:"
+echo "  Total: $(hr "$TOTAL_BYTES")"
+echo "  Used : $(hr "$USED_BYTES")"
+echo "  Avail: $(hr "$AVAIL_DISK_BYTES")"
 echo
 
 # ---------- OAuth token ----------
@@ -90,7 +104,7 @@ echo
 
 # ---------- scan apps ----------
 printf "🔎 Checking applications...\n"
-declare -a APP_PATHS WEB_BYTES DB_BYTES TOTAL_BYTES APP_NAMES
+declare -a APP_PATHS WEB_BYTES DB_BYTES TOTAL_BYTES_ARR APP_NAMES
 idx=0
 
 for app in "$APPS_DIR"/*; do
@@ -110,7 +124,7 @@ for app in "$APPS_DIR"/*; do
     APP_PATHS[$idx]="$app"
     WEB_BYTES[$idx]="$WEB_B"
     DB_BYTES[$idx]="$DB_B"
-    TOTAL_BYTES[$idx]="$TOT_B"
+    TOTAL_BYTES_ARR[$idx]="$TOT_B"
     APP_NAMES[$idx]="${DBNAME:-unknown_db}"
 
     IDS="$(extract_ids_from_logs "$app/logs" || true)"
@@ -142,7 +156,7 @@ if [ "${#WP_APPS[@]}" -gt 0 ]; then
   printf "%-40s %-14s %-14s %-14s %-11s %-11s\n" "----------------------------------------" "--------------" "--------------" "--------------" "-----------" "-----------"
   GRAND=0
   for i in "${!APP_PATHS[@]}"; do
-    w="${WEB_BYTES[$i]}"; d="${DB_BYTES[$i]}"; t="${TOTAL_BYTES[$i]}"; GRAND=$((GRAND + t))
+    w="${WEB_BYTES[$i]}"; d="${DB_BYTES[$i]}"; t="${TOTAL_BYTES_ARR[$i]}"; GRAND=$((GRAND + t))
     printf "%-40s %-14s %-14s %-14s %-11s %-11s\n" \
       "$(basename "${APP_PATHS[$i]}") (${APP_NAMES[$i]})" \
       "$(hr "$w")" "$(hr "$d")" "$(hr "$t")" \
@@ -153,10 +167,10 @@ if [ "${#WP_APPS[@]}" -gt 0 ]; then
   echo
 
   if [ "$GRAND" -gt "$AVAIL_DISK_BYTES" ]; then
-    echo "❌ Not enough space for backup. Required: $(hr "$GRAND"), Available: $(hr "$AVAIL_DISK_BYTES")"
+    echo "❌ Not enough space for backup on $MOUNT_POINT. Required: $(hr "$GRAND"), Available: $(hr "$AVAIL_DISK_BYTES")"
     exit 1
   else
-    echo "✅ Backup can fit (Required: $(hr "$GRAND"), Available: $(hr "$AVAIL_DISK_BYTES"))"
+    echo "✅ Backup can fit on $MOUNT_POINT (Required: $(hr "$GRAND"), Available: $(hr "$AVAIL_DISK_BYTES"))"
     echo
   fi
 fi
